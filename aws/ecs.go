@@ -1,12 +1,14 @@
 package aws
 
 import (
-	"github.com/awslabs/aws-sdk-go/aws"
-	"github.com/awslabs/aws-sdk-go/service/ecs"
-	"github.com/awslabs/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/stormcat24/ecs-formation/schema"
 	"strings"
 	"github.com/stormcat24/ecs-formation/util"
+	"time"
+	"errors"
 )
 
 
@@ -219,4 +221,29 @@ func (self *ECSManager) ListServices(cluster string) (*ecs.ListServicesOutput, e
 	}
 
 	return svc.ListServices(params)
+}
+
+func (self *ECSManager) WaitStoppingService(cluster string, service string) error {
+
+	for {
+		time.Sleep(5 * time.Second)
+
+		result, err := self.DescribeService(cluster, []*string{&service})
+
+		if err != nil {
+			return err
+		}
+
+		if len(result.Services) == 0 {
+			return errors.New("service not found")
+		}
+
+		target := result.Services[0]
+
+		if *target.RunningCount == 0 {
+			return nil
+		}
+
+		// TODO retry count restriction
+	}
 }

@@ -1,7 +1,7 @@
 package util
 
 import (
-	"github.com/awslabs/aws-sdk-go/aws/awsutil"
+	"github.com/aws/aws-sdk-go/aws/awsutil"
 	"strings"
 	"bufio"
 	"io"
@@ -11,9 +11,10 @@ import (
 
 func ConvertPointerString(values []string) []*string {
 
-	merged := []*string{}
-	for _, value := range values {
-		merged = append(merged, &value)
+	merged := make([]*string, len(values))
+
+	for i := 0; i < len(values); i++ {
+		merged[i] = &values[i]
 	}
 
 	return merged
@@ -34,9 +35,10 @@ func StringValueWithIndent(value interface{}, indent int) string {
 		}
 
 		for i := 0; i < indent; i++ {
-			buffer.WriteString("\t")
+			buffer.WriteString("  ")
 		}
 		buffer.Write(line)
+		buffer.WriteString("\n")
 	}
 
 	return buffer.String()
