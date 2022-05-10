@@ -77,7 +77,7 @@ func CreateVolumeInfo(value string) (*VolumeInfo, error) {
 		MountPoint: &ecs.MountPoint{
 			SourceVolume: aws.String(volumeName),
 			ContainerPath: aws.String(containerPath),
-			ReadOnly: aws.Boolean(ro),
+			ReadOnly: &ro,
 		},
 	}, nil
 }
@@ -88,7 +88,8 @@ func createVolumeName(path *string) (string, error) {
 		return "", errors.New("cannot create volume name from empty string.")
 	}
 
-	tokens := strings.Split(*path, "/")
+	noDots := strings.Replace(*path, ".", "/", -1)
+	tokens := strings.Split(noDots, "/")
 
 	parts := []string{}
 	for _, token := range tokens {

@@ -14,6 +14,15 @@ import (
 	"github.com/stormcat24/ecs-formation/logger"
 	"time"
 	"errors"
+	"github.com/stormcat24/ecs-formation/util"
+)
+
+type TaskWatchStatus int
+
+const (
+	WatchContinue TaskWatchStatus = iota
+	WatchFinish
+	WatchTerminate
 )
 
 type ServiceController struct {
@@ -259,6 +268,9 @@ func (self *ServiceController) WaitActiveService(cluster string, service string)
 	api := self.Ecs.ServiceApi()
 	taskApi := self.Ecs.TaskApi()
 
+	var flag = false
+	var taskARNs []*string
+
 	for {
 		time.Sleep(5 * time.Second)
 
@@ -276,50 +288,61 @@ func (self *ServiceController) WaitActiveService(cluster string, service string)
 
 		// The status of the service. The valid values are ACTIVE, DRAINING, or INACTIVE.
 		logger.Main.Infof("service '%s@%s' status = %s ...", service, cluster, *target.Status)
+
 		if *target.Status == "ACTIVE" {
 
 			if len(target.Events) > 0 && strings.Contains(*target.Events[0].Message, "was unable to place a task"){
 				return errors.New(*target.Events[0].Message)
 			}
 
-			reslt, errlt := taskApi.ListTasks(cluster, service)
-			if errlt != nil {
-				return errlt
+			if !flag {
+				reslt, errlt := taskApi.ListTasks(cluster, service)
+				if errlt != nil {
+					return errlt
+				}
+
+				if len(reslt.TaskARNs) == 0 {
+					continue
+				} else {
+					taskARNs = reslt.TaskARNs
+					flag = true
+				}
 			}
 
-			if len(reslt.TaskARNs) == 0 {
-				continue
-			}
-
-			resdt, errdt := taskApi.DescribeTasks(cluster, reslt.TaskARNs)
+			resdt, errdt := taskApi.DescribeTasks(cluster, taskARNs)
 			if errdt != nil {
 				return errdt
 			}
 
-			if self.checkRunningTask(resdt) {
+
+			watchStatus := self.checkRunningTask(resdt)
+			if watchStatus == WatchFinish {
 				logger.Main.Info("At least one of task has started successfully.")
 				return nil
+			} else if watchStatus == WatchTerminate {
+				logger.Main.Error("Stopped watching task, because task has stopped.")
+				return errors.New("Task has been stopped for some reason.")
 			}
 
 		}
 	}
 }
 
-func (self *ServiceController) checkRunningTask(dto *ecs.DescribeTasksOutput) bool {
+func (self *ServiceController) checkRunningTask(dto *ecs.DescribeTasksOutput) TaskWatchStatus {
 
 	logger.Main.Info("Current task conditions as follows:")
 
 	status := []string{}
 	for _, task := range dto.Tasks {
-		fmt.Println(fmt.Sprintf("    %s:", *task.TaskARN))
-		fmt.Println(fmt.Sprintf("        LastStatus:%s", self.RoundColorStatus(*task.LastStatus)))
-		fmt.Println("        Containers:")
+		util.Println(fmt.Sprintf("    %s:", *task.TaskARN))
+		util.Println(fmt.Sprintf("        LastStatus:%s", self.RoundColorStatus(*task.LastStatus)))
+		util.Println("        Containers:")
 
 		for _, con := range task.Containers {
-			fmt.Println(fmt.Sprintf("            ----------[%s]----------", *con.Name))
-			fmt.Println(fmt.Sprintf("            ContainerARN:%s", *con.ContainerARN))
-			fmt.Println(fmt.Sprintf("            Status:%s", self.RoundColorStatus(*con.LastStatus)))
-			fmt.Println()
+			util.Println(fmt.Sprintf("            ----------[%s]----------", *con.Name))
+			util.Println(fmt.Sprintf("            ContainerARN:%s", *con.ContainerARN))
+			util.Println(fmt.Sprintf("            Status:%s", self.RoundColorStatus(*con.LastStatus)))
+			util.Println()
 		}
 
 		status = append(status, *task.LastStatus)
@@ -328,11 +351,13 @@ func (self *ServiceController) checkRunningTask(dto *ecs.DescribeTasksOutput) bo
 	// if RUNNING at least one, ecs-formation deals with ok.
 	for _, s := range status {
 		if s == "RUNNING" {
-			return true
+			return WatchFinish
+		} else if s == "STOPPED" {
+			return WatchTerminate
 		}
 	}
 
-	return false
+	return WatchContinue
 }
 
 func (self *ServiceController) RoundColorStatus(status string) *color.Escape {
