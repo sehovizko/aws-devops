@@ -10,7 +10,6 @@ import (
 	"github.com/stormcat24/ecs-formation/task"
 	"strings"
 	"github.com/str1ngs/ansi/color"
-	"github.com/stormcat24/ecs-formation/plan"
 	"github.com/stormcat24/ecs-formation/util"
 	"github.com/stormcat24/ecs-formation/bluegreen"
 	"github.com/stormcat24/ecs-formation/logger"
@@ -57,7 +56,7 @@ var commandBluegreen = cli.Command{
 	Flags: []cli.Flag{
 		cli.BoolFlag{
 			Name: "nodeploy, nd",
-			Usage: "bbb",
+			Usage: "without deployment, only swap load balancer",
 		},
 		cli.BoolFlag{
 			Name: "json-output, jo",
@@ -81,7 +80,7 @@ func assert(err error) {
 
 func doService(c *cli.Context) {
 
-	ecsManager, err := buildECSManager()
+	awsManager, err := buildAwsManager()
 
 	if err != nil {
 		logger.Main.Error(color.Red(err.Error()))
@@ -102,7 +101,7 @@ func doService(c *cli.Context) {
 	}
 
 	jsonOutput := c.Bool("json-output")
-	clusterController, err := service.NewServiceController(ecsManager, projectDir, operation.TargetResource)
+	clusterController, err := service.NewServiceController(awsManager, projectDir, operation.TargetResource)
 
 	plans, err := createClusterPlans(clusterController, projectDir, jsonOutput)
 
@@ -116,9 +115,13 @@ func doService(c *cli.Context) {
 	}
 }
 
+type Hoge struct {
+	Param1 string `json:param1`
+}
+
 func doTask(c *cli.Context) {
 
-	ecsManager, err := buildECSManager()
+	awsManager, err := buildAwsManager()
 
 	if err != nil {
 		logger.Main.Error(color.Red(err.Error()))
@@ -138,7 +141,7 @@ func doTask(c *cli.Context) {
 		os.Exit(1)
 	}
 
-	taskController, err := task.NewTaskDefinitionController(ecsManager, projectDir, operation.TargetResource)
+	taskController, err := task.NewTaskDefinitionController(awsManager, projectDir, operation.TargetResource)
 	if err != nil {
 		logger.Main.Error(color.Red(err.Error()))
 		os.Exit(1)
@@ -163,7 +166,7 @@ func doTask(c *cli.Context) {
 
 func doBluegreen(c *cli.Context) {
 
-	ecsManager, err := buildECSManager()
+	awsManager, err := buildAwsManager()
 
 	if err != nil {
 		logger.Main.Error(color.Red(err.Error()))
@@ -183,7 +186,7 @@ func doBluegreen(c *cli.Context) {
 		os.Exit(1)
 	}
 
-	bgController, errbgc := bluegreen.NewBlueGreenController(ecsManager, projectDir, operation.TargetResource)
+	bgController, errbgc := bluegreen.NewBlueGreenController(awsManager, projectDir, operation.TargetResource)
 	if errbgc != nil {
 		logger.Main.Error(color.Red(errbgc.Error()))
 		os.Exit(1)
@@ -221,7 +224,7 @@ func doBluegreen(c *cli.Context) {
 	}
 }
 
-func createClusterPlans(controller *service.ServiceController, projectDir string, jsonOutput bool) ([]*plan.ServiceUpdatePlan, error) {
+func createClusterPlans(controller *service.ServiceController, projectDir string, jsonOutput bool) ([]*service.ServiceUpdatePlan, error) {
 
 	if jsonOutput {
 		util.Output = false
@@ -234,7 +237,7 @@ func createClusterPlans(controller *service.ServiceController, projectDir string
 	plans, err := controller.CreateServiceUpdatePlans()
 
 	if err != nil {
-		return []*plan.ServiceUpdatePlan{}, err
+		return []*service.ServiceUpdatePlan{}, err
 	}
 
 	for _, plan := range plans {
@@ -295,7 +298,7 @@ func createClusterPlans(controller *service.ServiceController, projectDir string
 	return plans, nil
 }
 
-func createTaskPlans(controller *task.TaskDefinitionController, projectDir string) []*plan.TaskUpdatePlan {
+func createTaskPlans(controller *task.TaskDefinitionController, projectDir string) []*task.TaskUpdatePlan {
 
 	taskDefs := controller.GetTaskDefinitionMap()
 	plans := controller.CreateTaskUpdatePlans(taskDefs)
@@ -318,7 +321,7 @@ func createTaskPlans(controller *task.TaskDefinitionController, projectDir strin
 	return plans
 }
 
-func createBlueGreenPlans(controller *bluegreen.BlueGreenController, jsonOutput bool) ([]*plan.BlueGreenPlan, error) {
+func createBlueGreenPlans(controller *bluegreen.BlueGreenController, jsonOutput bool) ([]*bluegreen.BlueGreenPlan, error) {
 
 	if jsonOutput {
 		util.Output = false
@@ -331,7 +334,7 @@ func createBlueGreenPlans(controller *bluegreen.BlueGreenController, jsonOutput 
 
 	cplans, errcp := controller.ClusterController.CreateServiceUpdatePlans()
 	if errcp != nil {
-		return []*plan.BlueGreenPlan{}, errcp
+		return []*bluegreen.BlueGreenPlan{}, errcp
 	}
 
 	bgplans, errbgp := controller.CreateBlueGreenPlans(bgmap, cplans)
@@ -432,7 +435,7 @@ type BlueGreenServiceJson struct {
 	RunningCount        int64
 }
 
-func buildECSManager() (*aws.ECSManager, error) {
+func buildAwsManager() (*aws.AwsManager, error) {
 
 	accessKey := strings.Trim(os.Getenv("AWS_ACCESS_KEY"), " ")
 	accessSecretKey := strings.Trim(os.Getenv("AWS_SECRET_ACCESS_KEY"), " ")
@@ -450,7 +453,7 @@ func buildECSManager() (*aws.ECSManager, error) {
 		return nil, fmt.Errorf("'AWS_REGION' is not specified.")
 	}
 
-	return aws.NewECSManager(accessKey, accessSecretKey, region), nil
+	return aws.NewAwsManager(accessKey, accessSecretKey, region), nil
 }
 
 func createOperation(args cli.Args) (Operation, error) {
