@@ -1,20 +1,21 @@
 package operation
 
 import (
-	"log"
-	"os"
-	"github.com/codegangsta/cli"
+	"encoding/json"
 	"fmt"
+	"github.com/aws/aws-sdk-go/service/autoscaling"
+	"github.com/codegangsta/cli"
 	"github.com/stormcat24/ecs-formation/aws"
+	"github.com/stormcat24/ecs-formation/bluegreen"
+	"github.com/stormcat24/ecs-formation/config"
+	"github.com/stormcat24/ecs-formation/logger"
 	"github.com/stormcat24/ecs-formation/service"
 	"github.com/stormcat24/ecs-formation/task"
-	"strings"
-	"github.com/str1ngs/ansi/color"
 	"github.com/stormcat24/ecs-formation/util"
-	"github.com/stormcat24/ecs-formation/bluegreen"
-	"github.com/stormcat24/ecs-formation/logger"
-	"encoding/json"
-	"github.com/aws/aws-sdk-go/service/autoscaling"
+	"github.com/str1ngs/ansi/color"
+	"log"
+	"os"
+	"strings"
 )
 
 var Commands = []cli.Command{
@@ -24,14 +25,14 @@ var Commands = []cli.Command{
 }
 
 var commandService = cli.Command{
-	Name: "service",
+	Name:  "service",
 	Usage: "Manage ECS services on cluster",
 	Description: `
 	Manage services on ECS cluster.
 `,
 	Flags: []cli.Flag{
 		cli.BoolFlag{
-			Name: "json-output, jo",
+			Name:  "json-output, jo",
 			Usage: "Output json",
 		},
 	},
@@ -39,7 +40,7 @@ var commandService = cli.Command{
 }
 
 var commandTask = cli.Command{
-	Name: "task",
+	Name:  "task",
 	Usage: "Manage ECS Task Definitions",
 	Description: `
 	Manage ECS Task Definitions.
@@ -48,18 +49,18 @@ var commandTask = cli.Command{
 }
 
 var commandBluegreen = cli.Command{
-	Name: "bluegreen",
+	Name:  "bluegreen",
 	Usage: "Manage bluegreen deployment on ECS",
 	Description: `
 	Manage bluegreen deployment on ECS.
 `,
 	Flags: []cli.Flag{
 		cli.BoolFlag{
-			Name: "nodeploy, nd",
+			Name:  "nodeploy, nd",
 			Usage: "without deployment, only swap load balancer",
 		},
 		cli.BoolFlag{
-			Name: "json-output, jo",
+			Name:  "json-output, jo",
 			Usage: "Output json",
 		},
 	},
@@ -79,6 +80,8 @@ func assert(err error) {
 }
 
 func doService(c *cli.Context) {
+
+	logger.Main.Infof("retry-count=%d", config.AppConfig.RetryCount)
 
 	awsManager, err := buildAwsManager()
 
@@ -110,16 +113,14 @@ func doService(c *cli.Context) {
 		os.Exit(1)
 	}
 
-	if (operation.SubCommand == "apply") {
+	if operation.SubCommand == "apply" {
 		clusterController.ApplyServicePlans(plans)
 	}
 }
 
-type Hoge struct {
-	Param1 string `json:param1`
-}
-
 func doTask(c *cli.Context) {
+
+	logger.Main.Infof("retry-count=%d", config.AppConfig.RetryCount)
 
 	awsManager, err := buildAwsManager()
 
@@ -149,7 +150,7 @@ func doTask(c *cli.Context) {
 
 	plans := createTaskPlans(taskController, projectDir)
 
-	if (operation.SubCommand == "apply") {
+	if operation.SubCommand == "apply" {
 		results, errapp := taskController.ApplyTaskDefinitionPlans(plans)
 
 		if errapp != nil {
@@ -165,6 +166,8 @@ func doTask(c *cli.Context) {
 }
 
 func doBluegreen(c *cli.Context) {
+
+	logger.Main.Infof("retry-count=%d", config.AppConfig.RetryCount)
 
 	awsManager, err := buildAwsManager()
 
@@ -202,7 +205,7 @@ func doBluegreen(c *cli.Context) {
 
 	// cluster check
 
-	if (operation.SubCommand == "apply") {
+	if operation.SubCommand == "apply" {
 
 		nodeploy := c.Bool("nodeploy")
 
@@ -257,7 +260,7 @@ func createClusterPlans(controller *service.ServiceController, projectDir string
 
 		for _, cs := range plan.CurrentServices {
 			util.PrintlnYellow(fmt.Sprintf("        ServiceName = %s", *cs.ServiceName))
-			util.PrintlnYellow(fmt.Sprintf("        ServiceARN = %s", *cs.ServiceARN))
+			util.PrintlnYellow(fmt.Sprintf("        ServiceARN = %s", *cs.ServiceArn))
 			util.PrintlnYellow(fmt.Sprintf("        TaskDefinition = %s", *cs.TaskDefinition))
 			util.PrintlnYellow(fmt.Sprintf("        DesiredCount = %d", *cs.DesiredCount))
 			util.PrintlnYellow(fmt.Sprintf("        PendingCount = %d", *cs.PendingCount))
@@ -342,7 +345,6 @@ func createBlueGreenPlans(controller *bluegreen.BlueGreenController, jsonOutput 
 		return bgplans, errbgp
 	}
 
-
 	jsonItems := []BlueGreenPlanJson{}
 	for _, bgplan := range bgplans {
 		util.PrintlnCyan("    Blue:")
@@ -351,7 +353,7 @@ func createBlueGreenPlans(controller *bluegreen.BlueGreenController, jsonOutput 
 		util.PrintlnCyan("        Current services as follows:")
 		for _, bcs := range bgplan.Blue.ClusterUpdatePlan.CurrentServices {
 			util.PrintlnCyan(fmt.Sprintf("            %s:", *bcs.ServiceName))
-			util.PrintlnCyan(fmt.Sprintf("                ServiceARN = %s", *bcs.ServiceARN))
+			util.PrintlnCyan(fmt.Sprintf("                ServiceARN = %s", *bcs.ServiceArn))
 			util.PrintlnCyan(fmt.Sprintf("                TaskDefinition = %s", *bcs.TaskDefinition))
 			util.PrintlnCyan(fmt.Sprintf("                DesiredCount = %d", *bcs.DesiredCount))
 			util.PrintlnCyan(fmt.Sprintf("                PendingCount = %d", *bcs.PendingCount))
@@ -371,7 +373,7 @@ func createBlueGreenPlans(controller *bluegreen.BlueGreenController, jsonOutput 
 		util.PrintlnGreen("        Current services as follows:")
 		for _, gcs := range bgplan.Green.ClusterUpdatePlan.CurrentServices {
 			util.PrintlnGreen(fmt.Sprintf("            %s:", *gcs.ServiceName))
-			util.PrintlnGreen(fmt.Sprintf("                ServiceARN = %s", *gcs.ServiceARN))
+			util.PrintlnGreen(fmt.Sprintf("                ServiceARN = %s", *gcs.ServiceArn))
 			util.PrintlnGreen(fmt.Sprintf("                TaskDefinition = %s", *gcs.TaskDefinition))
 			util.PrintlnGreen(fmt.Sprintf("                DesiredCount = %d", *gcs.DesiredCount))
 			util.PrintlnGreen(fmt.Sprintf("                PendingCount = %d", *gcs.PendingCount))
@@ -383,26 +385,26 @@ func createBlueGreenPlans(controller *bluegreen.BlueGreenController, jsonOutput 
 		jsonItems = append(jsonItems, BlueGreenPlanJson{
 
 			Blue: BlueGreenServiceJson{
-				ClusterARN: *bgplan.Blue.CurrentService.ClusterARN,
+				ClusterARN:          *bgplan.Blue.CurrentService.ClusterArn,
 				AutoScalingGroupARN: *bgplan.Blue.AutoScalingGroup.AutoScalingGroupARN,
-				Instances: bgplan.Blue.AutoScalingGroup.Instances,
-				TaskDefinition: *bgplan.Blue.CurrentService.TaskDefinition,
-				DesiredCount: *bgplan.Blue.CurrentService.DesiredCount,
-				PendingCount: *bgplan.Blue.CurrentService.PendingCount,
-				RunningCount: *bgplan.Blue.CurrentService.RunningCount,
+				Instances:           bgplan.Blue.AutoScalingGroup.Instances,
+				TaskDefinition:      *bgplan.Blue.CurrentService.TaskDefinition,
+				DesiredCount:        *bgplan.Blue.CurrentService.DesiredCount,
+				PendingCount:        *bgplan.Blue.CurrentService.PendingCount,
+				RunningCount:        *bgplan.Blue.CurrentService.RunningCount,
 			},
 			Green: BlueGreenServiceJson{
-				ClusterARN: *bgplan.Green.CurrentService.ClusterARN,
+				ClusterARN:          *bgplan.Green.CurrentService.ClusterArn,
 				AutoScalingGroupARN: *bgplan.Green.AutoScalingGroup.AutoScalingGroupARN,
-				Instances: bgplan.Green.AutoScalingGroup.Instances,
-				TaskDefinition: *bgplan.Green.CurrentService.TaskDefinition,
-				DesiredCount: *bgplan.Green.CurrentService.DesiredCount,
-				PendingCount: *bgplan.Green.CurrentService.PendingCount,
-				RunningCount: *bgplan.Green.CurrentService.RunningCount,
+				Instances:           bgplan.Green.AutoScalingGroup.Instances,
+				TaskDefinition:      *bgplan.Green.CurrentService.TaskDefinition,
+				DesiredCount:        *bgplan.Green.CurrentService.DesiredCount,
+				PendingCount:        *bgplan.Green.CurrentService.PendingCount,
+				RunningCount:        *bgplan.Green.CurrentService.RunningCount,
 			},
 			PrimaryElb: bgplan.PrimaryElb,
 			StandbyElb: bgplan.StandbyElb,
-			Active: active,
+			Active:     active,
 		})
 	}
 
@@ -471,7 +473,7 @@ func createOperation(args cli.Args) (Operation, error) {
 		}
 
 		return Operation{
-			SubCommand: sub,
+			SubCommand:     sub,
 			TargetResource: targetResource,
 		}, nil
 	} else {

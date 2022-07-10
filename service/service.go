@@ -1,18 +1,18 @@
 package service
 
 import (
-	"io/ioutil"
-	"fmt"
-	"strings"
-	"regexp"
-	"github.com/stormcat24/ecs-formation/aws"
-	"os"
-	"github.com/str1ngs/ansi/color"
-	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/stormcat24/ecs-formation/logger"
-	"time"
 	"errors"
+	"fmt"
+	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/stormcat24/ecs-formation/aws"
+	"github.com/stormcat24/ecs-formation/logger"
 	"github.com/stormcat24/ecs-formation/util"
+	"github.com/str1ngs/ansi/color"
+	"io/ioutil"
+	"os"
+	"regexp"
+	"strings"
+	"time"
 )
 
 type TaskWatchStatus int
@@ -24,15 +24,15 @@ const (
 )
 
 type ServiceController struct {
-	Ecs            *aws.AwsManager
+	manager        *aws.AwsManager
 	TargetResource string
 	clusters       []Cluster
 }
 
-func NewServiceController(ecs *aws.AwsManager, projectDir string, targetResource string) (*ServiceController, error) {
+func NewServiceController(manager *aws.AwsManager, projectDir string, targetResource string) (*ServiceController, error) {
 
 	con := &ServiceController{
-		Ecs: ecs,
+		manager: manager,
 	}
 
 	clusters, err := con.searchServices(projectDir)
@@ -71,7 +71,7 @@ func (self *ServiceController) searchServices(projectDir string) ([]Cluster, err
 
 			serviceMap, _ := CreateServiceMap(content)
 			cluster := Cluster{
-				Name: clusterName,
+				Name:     clusterName,
 				Services: serviceMap,
 			}
 
@@ -96,7 +96,9 @@ func (self *ServiceController) CreateServiceUpdatePlans() ([]*ServiceUpdatePlan,
 				return plans, err
 			}
 
-			plans = append(plans, cp)
+			if cp != nil {
+				plans = append(plans, cp)
+			}
 		}
 	}
 	return plans, nil
@@ -104,63 +106,63 @@ func (self *ServiceController) CreateServiceUpdatePlans() ([]*ServiceUpdatePlan,
 
 func (self *ServiceController) CreateServiceUpdatePlan(cluster Cluster) (*ServiceUpdatePlan, error) {
 
-	clusterApi := self.Ecs.ClusterApi()
-	output, errdc := clusterApi.DescribeClusters([]*string{&cluster.Name})
+	api := self.manager.EcsApi()
+	output, errdc := api.DescribeClusters([]*string{&cluster.Name})
 
 	if errdc != nil {
-		return &ServiceUpdatePlan{}, errdc
+		return nil, errdc
 	}
 
 	if len(output.Failures) > 0 {
-		return &ServiceUpdatePlan{}, errors.New(fmt.Sprintf("Cluster '%s' not found", cluster.Name))
+		return nil, errors.New(fmt.Sprintf("Cluster '%s' not found", cluster.Name))
 	}
 
-	rlci, errlci := clusterApi.ListContainerInstances(cluster.Name)
+	rlci, errlci := api.ListContainerInstances(cluster.Name)
 	if errlci != nil {
-		return &ServiceUpdatePlan{}, errlci
+		return nil, errlci
 	}
 
-	if len(rlci.ContainerInstanceARNs) == 0 {
-		return &ServiceUpdatePlan{}, errors.New(fmt.Sprintf("ECS instances not found in cluster '%s' not found", cluster.Name))
-	}
+	if len(rlci.ContainerInstanceArns) == 0 {
+		logger.Main.Warnf("ECS instances not found in cluster '%s' not found", cluster.Name)
+		return nil, nil
 
-	target := output.Clusters[0]
+	} else {
+		target := output.Clusters[0]
 
-	if *target.Status != "ACTIVE" {
-		return &ServiceUpdatePlan{}, errors.New(fmt.Sprintf("Cluster '%s' is not ACTIVE.", cluster.Name))
-	}
-
-	serviceApi := self.Ecs.ServiceApi()
-
-	resListServices, errls := serviceApi.ListServices(cluster.Name)
-	if errls != nil {
-		return &ServiceUpdatePlan{}, errls
-	}
-
-	currentServices := map[string]*ecs.Service{}
-	if len(resListServices.ServiceARNs) > 0 {
-		resDescribeService, errds := serviceApi.DescribeService(cluster.Name, resListServices.ServiceARNs)
-		if errds != nil {
-			return &ServiceUpdatePlan{}, errds
+		if *target.Status != "ACTIVE" {
+			return &ServiceUpdatePlan{}, errors.New(fmt.Sprintf("Cluster '%s' is not ACTIVE.", cluster.Name))
 		}
 
-		for _, service := range resDescribeService.Services {
-			currentServices[*service.ServiceName] = service
+		resListServices, errls := api.ListServices(cluster.Name)
+		if errls != nil {
+			return &ServiceUpdatePlan{}, errls
 		}
-	}
 
-	newServices := map[string]*Service{}
-	for name, newService := range cluster.Services {
-		s := newService
-		newServices[name] = &s
-	}
+		currentServices := map[string]*ecs.Service{}
+		if len(resListServices.ServiceArns) > 0 {
+			resDescribeService, errds := api.DescribeService(cluster.Name, resListServices.ServiceArns)
+			if errds != nil {
+				return &ServiceUpdatePlan{}, errds
+			}
 
-	return &ServiceUpdatePlan{
-		Name: cluster.Name,
-		InstanceARNs: rlci.ContainerInstanceARNs,
-		CurrentServices: currentServices,
-		NewServices: newServices,
-	}, nil
+			for _, service := range resDescribeService.Services {
+				currentServices[*service.ServiceName] = service
+			}
+		}
+
+		newServices := map[string]*Service{}
+		for name, newService := range cluster.Services {
+			s := newService
+			newServices[name] = &s
+		}
+
+		return &ServiceUpdatePlan{
+			Name:            cluster.Name,
+			InstanceARNs:    rlci.ContainerInstanceArns,
+			CurrentServices: currentServices,
+			NewServices:     newServices,
+		}, nil
+	}
 }
 
 func (self *ServiceController) ApplyServicePlans(plans []*ServiceUpdatePlan) {
@@ -177,7 +179,7 @@ func (self *ServiceController) ApplyServicePlans(plans []*ServiceUpdatePlan) {
 
 func (self *ServiceController) ApplyServicePlan(plan *ServiceUpdatePlan) error {
 
-	api := self.Ecs.ServiceApi()
+	api := self.manager.EcsApi()
 
 	for _, current := range plan.CurrentServices {
 
@@ -193,9 +195,8 @@ func (self *ServiceController) ApplyServicePlan(plan *ServiceUpdatePlan) error {
 		}
 		logger.Main.Infof("Stoped '%s' service on '%s'.", *current.ServiceName, plan.Name)
 
-
 		// delete service
-		result, err := api.DeleteService(plan.Name, *current.ServiceARN)
+		result, err := api.DeleteService(plan.Name, *current.ServiceArn)
 		if err != nil {
 			return err
 		}
@@ -204,7 +205,7 @@ func (self *ServiceController) ApplyServicePlan(plan *ServiceUpdatePlan) error {
 			return err
 		}
 
-		logger.Main.Infof("Deleted service '%s'", *result.Service.ServiceARN)
+		logger.Main.Infof("Deleted service '%s'", *result.Service.ServiceArn)
 	}
 
 	for _, add := range plan.NewServices {
@@ -214,7 +215,7 @@ func (self *ServiceController) ApplyServicePlan(plan *ServiceUpdatePlan) error {
 			return err
 		}
 
-		logger.Main.Infof("Created service '%s'", *result.Service.ServiceARN)
+		logger.Main.Infof("Created service '%s'", *result.Service.ServiceArn)
 		errwas := self.WaitActiveService(plan.Name, add.Name)
 		if errwas != nil {
 			return errwas
@@ -230,18 +231,17 @@ func toLoadBalancers(values *[]LoadBalancer) []*ecs.LoadBalancer {
 	for _, lb := range *values {
 		loadBalancers = append(loadBalancers, &ecs.LoadBalancer{
 			LoadBalancerName: &lb.Name,
-			ContainerName: &lb.ContainerName,
-			ContainerPort: &lb.ContainerPort,
+			ContainerName:    &lb.ContainerName,
+			ContainerPort:    &lb.ContainerPort,
 		})
 	}
 
 	return loadBalancers
 }
 
-
 func (self *ServiceController) waitStoppingService(cluster string, service string) error {
 
-	api := self.Ecs.ServiceApi()
+	api := self.manager.EcsApi()
 
 	for {
 		time.Sleep(5 * time.Second)
@@ -268,8 +268,7 @@ func (self *ServiceController) waitStoppingService(cluster string, service strin
 
 func (self *ServiceController) WaitActiveService(cluster string, service string) error {
 
-	api := self.Ecs.ServiceApi()
-	taskApi := self.Ecs.TaskApi()
+	api := self.manager.EcsApi()
 
 	var flag = false
 	var taskARNs []*string
@@ -294,29 +293,28 @@ func (self *ServiceController) WaitActiveService(cluster string, service string)
 
 		if *target.Status == "ACTIVE" {
 
-			if len(target.Events) > 0 && strings.Contains(*target.Events[0].Message, "was unable to place a task"){
+			if len(target.Events) > 0 && strings.Contains(*target.Events[0].Message, "was unable to place a task") {
 				return errors.New(*target.Events[0].Message)
 			}
 
 			if !flag {
-				reslt, errlt := taskApi.ListTasks(cluster, service)
+				reslt, errlt := api.ListTasks(cluster, service)
 				if errlt != nil {
 					return errlt
 				}
 
-				if len(reslt.TaskARNs) == 0 {
+				if len(reslt.TaskArns) == 0 {
 					continue
 				} else {
-					taskARNs = reslt.TaskARNs
+					taskARNs = reslt.TaskArns
 					flag = true
 				}
 			}
 
-			resdt, errdt := taskApi.DescribeTasks(cluster, taskARNs)
+			resdt, errdt := api.DescribeTasks(cluster, taskARNs)
 			if errdt != nil {
 				return errdt
 			}
-
 
 			watchStatus := self.checkRunningTask(resdt)
 			if watchStatus == WatchFinish {
@@ -337,13 +335,13 @@ func (self *ServiceController) checkRunningTask(dto *ecs.DescribeTasksOutput) Ta
 
 	status := []string{}
 	for _, task := range dto.Tasks {
-		util.Println(fmt.Sprintf("    %s:", *task.TaskARN))
+		util.Println(fmt.Sprintf("    %s:", *task.TaskArn))
 		util.Println(fmt.Sprintf("        LastStatus:%s", self.RoundColorStatus(*task.LastStatus)))
 		util.Println("        Containers:")
 
 		for _, con := range task.Containers {
 			util.Println(fmt.Sprintf("            ----------[%s]----------", *con.Name))
-			util.Println(fmt.Sprintf("            ContainerARN:%s", *con.ContainerARN))
+			util.Println(fmt.Sprintf("            ContainerARN:%s", *con.ContainerArn))
 			util.Println(fmt.Sprintf("            Status:%s", self.RoundColorStatus(*con.LastStatus)))
 			util.Println()
 		}

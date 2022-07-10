@@ -1,27 +1,28 @@
 package task
 
 import (
-	"io/ioutil"
-	"strings"
-	"regexp"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ecs"
 	efaws "github.com/stormcat24/ecs-formation/aws"
 	"github.com/stormcat24/ecs-formation/logger"
-	"github.com/aws/aws-sdk-go/service/ecs"
-	"time"
-	"github.com/aws/aws-sdk-go/aws"
 	"github.com/stormcat24/ecs-formation/util"
+	"github.com/str1ngs/ansi/color"
+	"io/ioutil"
+	"regexp"
+	"strings"
+	"time"
 )
 
 type TaskDefinitionController struct {
-	Ecs            *efaws.AwsManager
+	manager        *efaws.AwsManager
 	TargetResource string
 	defmap         map[string]*TaskDefinition
 }
 
-func NewTaskDefinitionController(ecs *efaws.AwsManager, projectDir string, targetResource string) (*TaskDefinitionController, error) {
+func NewTaskDefinitionController(manager *efaws.AwsManager, projectDir string, targetResource string) (*TaskDefinitionController, error) {
 
 	con := &TaskDefinitionController{
-		Ecs: ecs,
+		manager: manager,
 	}
 
 	defmap, err := con.searchTaskDefinitions(projectDir)
@@ -91,7 +92,7 @@ func (self *TaskDefinitionController) CreateTaskUpdatePlan(task *TaskDefinition)
 	}
 
 	return &TaskUpdatePlan{
-		Name: task.Name,
+		Name:          task.Name,
 		NewContainers: newContainers,
 	}
 }
@@ -106,10 +107,11 @@ func (self *TaskDefinitionController) ApplyTaskDefinitionPlans(plans []*TaskUpda
 		result, err := self.ApplyTaskDefinitionPlan(plan)
 
 		if err != nil {
+			logger.Main.Errorf("Register Task Definition '%s' is error.", plan.Name)
 			return []*ecs.RegisterTaskDefinitionOutput{}, err
 		}
+		logger.Main.Infof("Register Task Definition '%s' is success.", color.Cyan(plan.Name))
 		time.Sleep(1 * time.Second)
-
 		outputs = append(outputs, result)
 	}
 
@@ -129,7 +131,7 @@ func (self *TaskDefinitionController) ApplyTaskDefinitionPlan(task *TaskUpdatePl
 	for _, con := range containers {
 
 		var commands []*string
-		if (len(con.Command) > 0) {
+		if len(con.Command) > 0 {
 			for _, token := range strings.Split(con.Command, " ") {
 				commands = append(commands, aws.String(token))
 			}
@@ -138,7 +140,7 @@ func (self *TaskDefinitionController) ApplyTaskDefinitionPlan(task *TaskUpdatePl
 		}
 
 		var entryPoints []*string
-		if (len(con.EntryPoint) > 0) {
+		if len(con.EntryPoint) > 0 {
 			for _, token := range strings.Split(con.EntryPoint, " ") {
 				entryPoints = append(entryPoints, aws.String(token))
 			}
@@ -169,22 +171,22 @@ func (self *TaskDefinitionController) ApplyTaskDefinitionPlan(task *TaskUpdatePl
 		}
 
 		conDef := &ecs.ContainerDefinition{
-			CPU: &con.CpuUnits,
-			Command: commands,
-			EntryPoint: entryPoints,
-			Environment: toKeyValuePairs(con.Environment),
-			Essential: &con.Essential,
-			Image: aws.String(con.Image),
-			Links: util.ConvertPointerString(con.Links),
-			Memory: &con.Memory,
-			MountPoints: mountPoints,
-			Name: aws.String(con.Name),
+			Cpu:          &con.CpuUnits,
+			Command:      commands,
+			EntryPoint:   entryPoints,
+			Environment:  toKeyValuePairs(con.Environment),
+			Essential:    &con.Essential,
+			Image:        aws.String(con.Image),
+			Links:        util.ConvertPointerString(con.Links),
+			Memory:       &con.Memory,
+			MountPoints:  mountPoints,
+			Name:         aws.String(con.Name),
 			PortMappings: portMappings,
-			VolumesFrom: volumesFrom,
+			VolumesFrom:  volumesFrom,
 		}
 
 		conDefs = append(conDefs, conDef)
 	}
 
-	return self.Ecs.TaskApi().RegisterTaskDefinition(task.Name, conDefs, volumes)
+	return self.manager.EcsApi().RegisterTaskDefinition(task.Name, conDefs, volumes)
 }

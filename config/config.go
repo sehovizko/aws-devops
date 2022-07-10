@@ -9,13 +9,15 @@ var (
 )
 
 type ApplicationConfig struct {
-	SnsTopic string
+	SnsTopic   string
+	RetryCount int
 }
 
 func PrepareGlobalOptions(c *cli.Context) error {
 
 	AppConfig = &ApplicationConfig{
-		SnsTopic: c.GlobalString("sns-topic"),
+		SnsTopic:   c.GlobalString("sns-topic"),
+		RetryCount: c.GlobalInt("retry-count"),
 	}
 
 	return nil
