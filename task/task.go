@@ -3,6 +3,7 @@ package task
 import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/mattn/go-shellwords"
 	efaws "github.com/stormcat24/ecs-formation/aws"
 	"github.com/stormcat24/ecs-formation/logger"
 	"github.com/stormcat24/ecs-formation/util"
@@ -17,12 +18,14 @@ type TaskDefinitionController struct {
 	manager        *efaws.AwsManager
 	TargetResource string
 	defmap         map[string]*TaskDefinition
+	params         map[string]string
 }
 
-func NewTaskDefinitionController(manager *efaws.AwsManager, projectDir string, targetResource string) (*TaskDefinitionController, error) {
+func NewTaskDefinitionController(manager *efaws.AwsManager, projectDir string, targetResource string, params map[string]string) (*TaskDefinitionController, error) {
 
 	con := &TaskDefinitionController{
 		manager: manager,
+		params:  params,
 	}
 
 	defmap, err := con.searchTaskDefinitions(projectDir)
@@ -57,12 +60,19 @@ func (self *TaskDefinitionController) searchTaskDefinitions(projectDir string) (
 
 	for _, file := range files {
 		if !file.IsDir() && strings.HasSuffix(file.Name(), ".yml") {
-			content, _ := ioutil.ReadFile(taskDir + "/" + file.Name())
+			content, err := ioutil.ReadFile(taskDir + "/" + file.Name())
+			if err != nil {
+				return nil, err
+			}
 
+			merged := util.MergeYamlWithParameters(content, self.params)
 			tokens := filePattern.FindStringSubmatch(file.Name())
 			taskDefName := tokens[1]
 
-			taskDefinition, _ := CreateTaskDefinition(taskDefName, content)
+			taskDefinition, err := CreateTaskDefinition(taskDefName, merged)
+			if err != nil {
+				return nil, err
+			}
 
 			taskDefMap[taskDefName] = taskDefinition
 		}
@@ -141,9 +151,11 @@ func (self *TaskDefinitionController) ApplyTaskDefinitionPlan(task *TaskUpdatePl
 
 		var entryPoints []*string
 		if len(con.EntryPoint) > 0 {
-			for _, token := range strings.Split(con.EntryPoint, " ") {
-				entryPoints = append(entryPoints, aws.String(token))
+			ep, err := parseEntrypoint(con.EntryPoint)
+			if err != nil {
+				return nil, err
 			}
+			entryPoints = ep
 		} else {
 			entryPoints = nil
 		}
@@ -189,4 +201,18 @@ func (self *TaskDefinitionController) ApplyTaskDefinitionPlan(task *TaskUpdatePl
 	}
 
 	return self.manager.EcsApi().RegisterTaskDefinition(task.Name, conDefs, volumes)
+}
+
+func parseEntrypoint(target string) ([]*string, error) {
+	tokens, err := shellwords.Parse(target)
+	if err != nil {
+		return []*string{}, err
+	}
+
+	result := []*string{}
+	for _, token := range tokens {
+		s := token
+		result = append(result, &s)
+	}
+	return result, nil
 }

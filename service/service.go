@@ -27,12 +27,14 @@ type ServiceController struct {
 	manager        *aws.AwsManager
 	TargetResource string
 	clusters       []Cluster
+	params         map[string]string
 }
 
-func NewServiceController(manager *aws.AwsManager, projectDir string, targetResource string) (*ServiceController, error) {
+func NewServiceController(manager *aws.AwsManager, projectDir string, targetResource string, params map[string]string) (*ServiceController, error) {
 
 	con := &ServiceController{
 		manager: manager,
+		params:  params,
 	}
 
 	clusters, err := con.searchServices(projectDir)
@@ -64,12 +66,20 @@ func (self *ServiceController) searchServices(projectDir string) ([]Cluster, err
 
 	for _, file := range files {
 		if !file.IsDir() && strings.HasSuffix(file.Name(), ".yml") {
-			content, _ := ioutil.ReadFile(clusterDir + "/" + file.Name())
+			content, err := ioutil.ReadFile(clusterDir + "/" + file.Name())
+			if err != nil {
+				return []Cluster{}, err
+			}
+
+			merged := util.MergeYamlWithParameters(content, self.params)
 
 			tokens := filePattern.FindStringSubmatch(file.Name())
 			clusterName := tokens[1]
 
-			serviceMap, _ := CreateServiceMap(content)
+			serviceMap, err := CreateServiceMap(merged)
+			if err != nil {
+				return []Cluster{}, err
+			}
 			cluster := Cluster{
 				Name:     clusterName,
 				Services: serviceMap,
@@ -181,45 +191,127 @@ func (self *ServiceController) ApplyServicePlan(plan *ServiceUpdatePlan) error {
 
 	api := self.manager.EcsApi()
 
+	// currentにあってnewにない（削除）
 	for _, current := range plan.CurrentServices {
+		if _, ok := plan.NewServices[*current.ServiceName]; !ok {
+			logger.Main.Infof("Delating '%s' service on '%s' ...", *current.ServiceName, plan.Name)
 
-		// set desired_count = 0
-		if _, err := api.UpdateService(plan.Name, *current.ServiceName, 0, *current.TaskDefinition); err != nil {
-			return err
+			// set desired_count = 0
+			if _, err := api.UpdateService(plan.Name, *current.ServiceName, 0, *current.TaskDefinition); err != nil {
+				return err
+			}
+			logger.Main.Infof("Updated desired count = 0 of '%s' service on '%s' ...", *current.ServiceName, plan.Name)
+
+			// wait to stop service
+			logger.Main.Infof("Waiting to stop '%s' service on '%s' ...", *current.ServiceName, plan.Name)
+			if err := self.waitStoppingService(plan.Name, *current.ServiceName); err != nil {
+				return err
+			}
+			logger.Main.Infof("Stoped '%s' service on '%s'.", *current.ServiceName, plan.Name)
+
+			// delete service
+			dsrv, err := api.DeleteService(plan.Name, *current.ServiceArn)
+			if err != nil {
+				return err
+			}
+
+			if err := self.waitStoppingService(plan.Name, *current.ServiceName); err != nil {
+				return err
+			}
+
+			logger.Main.Infof("Deleted service '%s' completely.", *dsrv.Service.ServiceArn)
 		}
-
-		// wait to stop service
-		logger.Main.Infof("Waiting to stop '%s' service on '%s' ...", *current.ServiceName, plan.Name)
-		if err := self.waitStoppingService(plan.Name, *current.ServiceName); err != nil {
-			return err
-		}
-		logger.Main.Infof("Stoped '%s' service on '%s'.", *current.ServiceName, plan.Name)
-
-		// delete service
-		result, err := api.DeleteService(plan.Name, *current.ServiceArn)
-		if err != nil {
-			return err
-		}
-
-		if err := self.waitStoppingService(plan.Name, *current.ServiceName); err != nil {
-			return err
-		}
-
-		logger.Main.Infof("Deleted service '%s'", *result.Service.ServiceArn)
 	}
 
+	// newにあってcurrentにない（新規追加）
 	for _, add := range plan.NewServices {
+		if _, ok := plan.CurrentServices[add.Name]; !ok {
+			logger.Main.Infof("Creating '%s' service on '%s' ...", add.Name, plan.Name)
+			csrv, err := api.CreateService(plan.Name, add.Name, add.DesiredCount, toLoadBalancers(&add.LoadBalancers), add.TaskDefinition, add.Role)
+			if err != nil {
+				return err
+			}
 
-		result, err := api.CreateService(plan.Name, add.Name, add.DesiredCount, toLoadBalancers(&add.LoadBalancers), add.TaskDefinition, add.Role)
-		if err != nil {
-			return err
+			logger.Main.Infof("Created service '%s', task-definition is '%s'.", *csrv.Service.ServiceArn, *csrv.Service.TaskDefinition)
+			if err := self.WaitActiveService(plan.Name, add.Name); err != nil {
+				return err
+			}
+			logger.Main.Infof("Started service '%s' completely.", *csrv.Service.ServiceArn)
+		}
+	}
+
+	// update
+	for _, add := range plan.NewServices {
+		current, ok := plan.CurrentServices[add.Name]
+		if ok {
+			logger.Main.Infof("Updating '%s' service on '%s' ...", add.Name, plan.Name)
+
+			var nextDesiredCount int64
+			if add.KeepDesiredCount {
+				nextDesiredCount = *current.DesiredCount
+				logger.Main.Infof("Keep DesiredCount = %d at '%s'", nextDesiredCount, add.Name)
+			} else {
+				nextDesiredCount = add.DesiredCount
+				logger.Main.Infof("Next DesiredCount = %d at '%s'", nextDesiredCount, add.Name)
+			}
+
+			svc, err := api.UpdateService(plan.Name, add.Name, nextDesiredCount, add.TaskDefinition)
+			if err != nil {
+				return err
+			}
+			logger.Main.Infof("Created service '%v', task-definition is '%v'.", *svc.Service.ServiceArn, *svc.Service.TaskDefinition)
+			logger.Main.Infof("Launching task definition '%s' ...", *svc.Service.TaskDefinition)
+
+			var targetServiceId string
+			if len(svc.Service.Deployments) > 1 {
+				for _, dep := range svc.Service.Deployments {
+					if *dep.Status == "ACTIVE" {
+						targetServiceId = *dep.Id
+					}
+				}
+			} else {
+				for _, dep := range svc.Service.Deployments {
+					targetServiceId = *dep.Id
+				}
+			}
+
+			tasks, err := api.ListTasks(plan.Name, add.Name)
+			if err != nil {
+				return err
+			}
+
+			taskIds := []*string{}
+			for _, tarn := range tasks.TaskArns {
+				tokens := strings.Split(*tarn, "/")
+				if len(tokens) == 2 {
+					s := tokens[1]
+					taskIds = append(taskIds, &s)
+				}
+			}
+
+			if len(taskIds) > 0 {
+				dts, err := api.DescribeTasks(plan.Name, taskIds)
+				if err != nil {
+					return err
+				}
+
+				for _, t := range dts.Tasks {
+					if *t.StartedBy == targetServiceId {
+						if _, err := api.StopTask(plan.Name, *t.TaskArn); err != nil {
+							logger.Main.Warnf("Task '%s' is not found, so cannot stop.", *t.TaskArn)
+						} else {
+							logger.Main.Infof("Stopped Task '%s'", *t.TaskArn)
+						}
+					}
+				}
+			}
+
+			if err := self.WaitActiveService(plan.Name, add.Name); err != nil {
+				return err
+			}
+			logger.Main.Infof("Started service '%s' completely.", *svc.Service.ServiceArn)
 		}
 
-		logger.Main.Infof("Created service '%s'", *result.Service.ServiceArn)
-		errwas := self.WaitActiveService(plan.Name, add.Name)
-		if errwas != nil {
-			return errwas
-		}
 	}
 
 	return nil
@@ -244,7 +336,7 @@ func (self *ServiceController) waitStoppingService(cluster string, service strin
 	api := self.manager.EcsApi()
 
 	for {
-		time.Sleep(5 * time.Second)
+		time.Sleep(10 * time.Second)
 
 		result, err := api.DescribeService(cluster, []*string{&service})
 
@@ -274,7 +366,7 @@ func (self *ServiceController) WaitActiveService(cluster string, service string)
 	var taskARNs []*string
 
 	for {
-		time.Sleep(5 * time.Second)
+		time.Sleep(10 * time.Second)
 
 		result, err := api.DescribeService(cluster, []*string{&service})
 
